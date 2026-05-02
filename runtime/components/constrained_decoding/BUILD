@@ -115,9 +115,28 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "gemma_model_constraint_provider_hdrs",
+    hdrs = ["gemma_model_constraint_provider.h"],
+    deps = [
+        ":constraint",
+        ":constraint_provider",
+        ":constraint_provider_config",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@nlohmann_json//:json",
+        "@sentencepiece//:sentencepiece_processor",
+    ],
+)
+
 alias(
     name = "gemma_model_constraint_provider_lib",
-    actual = ":gemma_model_constraint_provider_shared_lib",
+    actual = select({
+        "//build_config:ios_arm64": ":gemma_model_constraint_provider_hdrs",
+        "//build_config:ios_sim_arm64": ":gemma_model_constraint_provider_hdrs",
+        "//conditions:default": ":gemma_model_constraint_provider_shared_lib",
+    }),
 )
 
 cc_import(
