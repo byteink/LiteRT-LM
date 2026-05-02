@@ -938,7 +938,15 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::BindTensorsAndRunDecode(
     decode_output_buffers[output_name] = std::move(output_buffer_dup);
   }
 
-  bool async = true;
+  // The MLDrift Metal backend deadlocks when overlapping async dispatches
+  // are issued on the decode signature (issue #6798). If any decode input
+  // buffer lives in Metal memory, force synchronous execution.
+  if (!do_decode_sync_.has_value()) {
+    do_decode_sync_ = std::any_of(
+        decode_input_buffers.begin(), decode_input_buffers.end(),
+        [](const auto& pair) { return pair.second.IsMetalMemory(); });
+  }
+  bool async = !*do_decode_sync_;
   LITERT_RETURN_IF_ERROR(
       compiled_model_->RunAsync(kDecodeSignatureRunner, decode_input_buffers,
                                 decode_output_buffers, async));

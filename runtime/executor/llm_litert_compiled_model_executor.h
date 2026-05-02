@@ -378,6 +378,12 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
   // GPU optimized single buffer cache
   bool gpu_optimized_single_buffer_cache_ = false;
 
+  // Cached result of `IsMetalMemory()` over the decode input buffers. The
+  // MLDrift Metal backend cannot tolerate overlapping async dispatches on
+  // the decode signature (issue #6798), so we force synchronous execution
+  // when any decode buffer lives in Metal memory.
+  std::optional<bool> do_decode_sync_;
+
   // The MTP drafter model.
   std::unique_ptr<LlmLiteRtMtpDrafter> mtp_drafter_;
 };
