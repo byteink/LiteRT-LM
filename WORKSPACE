@@ -378,6 +378,14 @@ http_archive(
     patch_cmds = [
         # Replace @//third_party with @litert//third_party in files under third_party/.
         "sed -i -e 's|\"@//third_party/|\"@litert//third_party/|g' third_party/*/*",
+        # iOS: load the Metal accelerator from its framework bundle via @rpath
+        # instead of as a bare `libLiteRtMetalAccelerator.dylib`. App Store
+        # rejects standalone .dylib files embedded in the app (Apple TN2435 —
+        # surfaces as the misleading "ITMS-90426 Invalid Swift Support /
+        # SwiftSupport folder missing"), so we ship it wrapped in
+        # LiteRtMetalAccelerator.framework. dlopen resolves @rpath through the
+        # app's @executable_path/Frameworks rpath; runtime_lib_path is empty.
+        "sed -i -e 's|\"libLiteRtMetalAccelerator\" SO_EXT|\"@rpath/LiteRtMetalAccelerator.framework/LiteRtMetalAccelerator\"|g' litert/runtime/accelerators/gpu_registry.cc",
     ],
     sha256 = LITERT_SHA256,
     strip_prefix = "LiteRT-" + LITERT_REF,
