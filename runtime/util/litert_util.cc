@@ -14,6 +14,7 @@
 
 #include "runtime/util/litert_util.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -36,6 +37,15 @@
 #include "runtime/executor/executor_settings_base.h"
 #include "runtime/executor/magic_number_configs_helper.h"
 #include "runtime/util/logging.h"
+
+// Defined in `c/engine.cc`. Populated via the `litert_lm_set_metal_*` C
+// API before `litert_lm_engine_create` is called; pushed into
+// `EnvironmentOptions` below so the Metal accelerator attaches to host-
+// retained Objective-C objects instead of creating its own.
+namespace litert::lm::internal {
+extern std::atomic<void*> g_metal_device_override;
+extern std::atomic<void*> g_metal_command_queue_override;
+}  // namespace litert::lm::internal
 
 namespace litert::lm {
 
@@ -70,6 +80,24 @@ absl::StatusOr<Environment&> GetEnvironment(EngineSettings& engine_settings,
                 ->configure_magic_numbers) {
           env_options = helper->GetLiteRtEnvOptions(*model_resources,
                                                     main_executor_settings);
+        }
+      }
+
+      if (backend == Backend::GPU) {
+        void* metal_device =
+            ::litert::lm::internal::g_metal_device_override.load(
+                std::memory_order_acquire);
+        void* metal_queue =
+            ::litert::lm::internal::g_metal_command_queue_override.load(
+                std::memory_order_acquire);
+        if (metal_device != nullptr) {
+          env_options.push_back(::litert::EnvironmentOptions::Option{
+              ::litert::EnvironmentOptions::Tag::kMetalDevice, metal_device});
+        }
+        if (metal_queue != nullptr) {
+          env_options.push_back(::litert::EnvironmentOptions::Option{
+              ::litert::EnvironmentOptions::Tag::kMetalCommandQueue,
+              metal_queue});
         }
       }
 

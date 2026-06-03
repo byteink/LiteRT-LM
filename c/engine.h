@@ -255,6 +255,34 @@ void litert_lm_conversation_optional_args_set_visual_token_budget(
 LITERT_LM_C_API_EXPORT
 void litert_lm_set_min_log_level(int level);
 
+// Injects a host-managed Metal device into the LiteRT environment.
+//
+// On iOS / macOS the Metal accelerator dylib otherwise creates its own
+// `MTLDevice` via `MTLCreateSystemDefaultDevice()`, which on real device
+// builds is reaped by ARC mid-flight and crashes the command encoder
+// (see `MTLDebugArgumentEncoder` "buffer is nil" assertions). Pass a
+// `__bridge_retained void*` cast of an `id<MTLDevice>` that you keep
+// alive for the lifetime of the app. The LiteRT environment is a
+// process-wide singleton, so this must be called before the first
+// `litert_lm_engine_create()` call to take effect.
+//
+// Pass `NULL` to clear the override (useful for tests).
+//
+// @param device A `__bridge_retained` `id<MTLDevice>` pointer.
+LITERT_LM_C_API_EXPORT
+void litert_lm_set_metal_device(void* device);
+
+// Injects a host-managed Metal command queue into the LiteRT
+// environment. Same lifetime rules as `litert_lm_set_metal_device`.
+// Should be created from the same `MTLDevice` passed to
+// `litert_lm_set_metal_device`.
+//
+// Pass `NULL` to clear the override.
+//
+// @param queue A `__bridge_retained` `id<MTLCommandQueue>` pointer.
+LITERT_LM_C_API_EXPORT
+void litert_lm_set_metal_command_queue(void* queue);
+
 // Represents the type of input data.
 typedef enum {
   kLiteRtLmInputDataTypeText,

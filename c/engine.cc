@@ -14,6 +14,7 @@
 
 #include "c/engine.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -47,6 +48,15 @@
 #include "runtime/proto/token.pb.h"
 #include "runtime/util/logging.h"
 #include "runtime/util/scoped_file.h"
+
+// Process-wide overrides for the Metal accelerator's `MTLDevice` /
+// `MTLCommandQueue`. Read by `GetEnvironment` in
+// `runtime/util/litert_util.cc` when constructing the LiteRT environment.
+// See the public-API documentation in `c/engine.h` for the rationale.
+namespace litert::lm::internal {
+std::atomic<void*> g_metal_device_override{nullptr};
+std::atomic<void*> g_metal_command_queue_override{nullptr};
+}  // namespace litert::lm::internal
 
 namespace {
 
@@ -509,6 +519,16 @@ void litert_lm_engine_settings_set_cache_dir(LiteRtLmEngineSettings* settings,
           cache_dir);
     }
   }
+}
+
+void litert_lm_set_metal_device(void* device) {
+  litert::lm::internal::g_metal_device_override.store(
+      device, std::memory_order_release);
+}
+
+void litert_lm_set_metal_command_queue(void* queue) {
+  litert::lm::internal::g_metal_command_queue_override.store(
+      queue, std::memory_order_release);
 }
 
 void litert_lm_engine_settings_set_litert_dispatch_lib_dir(
