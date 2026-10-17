@@ -38,7 +38,6 @@ internal object LiteRtLmJni {
    *   non-positive, use the engine's default.
    * @param maxNumImages The maximum number of images the model can handle. When non-positive, use
    *   the engine's default.
-   * @param enableBenchmark Whether to enable benchmark mode or not.
    * @param cacheDir The directory for cache files.
    * @param enableBenchmark Whether to enable benchmark or not.
    * @param enableSpeculativeDecoding Whether to enable speculative decoding.
@@ -47,6 +46,11 @@ internal object LiteRtLmJni {
    * @param audioNpuNativeLibraryDir The directory for the audio backend NPU libraries.
    * @param mainBackendNumThreads The number of threads for the main backend (CPU).
    * @param audioBackendNumThreads The number of threads for the audio backend (CPU).
+   * @param maxVisionTokensPerImage The maximum vision tokens per image. When non-positive, use the
+   *   engine's default.
+   * @param activationDataType The activation data type override for inference. When negative, use
+   *   the engine's default.
+   * @param enableYnnpack Whether to enable YNNPACK. When null, use the engine's default.
    * @return A pointer to the native engine instance.
    */
   external fun nativeCreateEngine(
@@ -64,6 +68,9 @@ internal object LiteRtLmJni {
     audioNpuNativeLibraryDir: String,
     mainBackendNumThreads: Int,
     audioBackendNumThreads: Int,
+    maxVisionTokensPerImage: Int,
+    activationDataType: Int = -1,
+    enableYnnpack: Boolean? = null,
   ): Long
 
   /**
@@ -71,19 +78,33 @@ internal object LiteRtLmJni {
    *
    * @param modelPath The path to the model file.
    * @param backend The backend to use for the engine.
+   * @param visionBackend The backend to use for the vision executor. If empty, the vision executor
+   *   will not be initialized.
+   * @param audioBackend The backend to use for the audio executor. If empty, the audio executor
+   *   will not be initialized.
    * @param prefillTokens The number of tokens to prefill.
    * @param decodeTokens The number of tokens to decode.
    * @param cacheDir The directory for cache files.
    * @param mainNpuNativeLibraryDir The directory for the main backend NPU libraries.
+   * @param visionNpuNativeLibraryDir The directory for the vision backend NPU libraries.
+   * @param audioNpuNativeLibraryDir The directory for the audio backend NPU libraries.
+   * @param enableSpeculativeDecoding Whether to enable speculative decoding.
+   * @param enableYnnpack Whether to enable YNNPACK. When null, use the engine's default.
    * @return A pointer to the native engine instance.
    */
   external fun nativeCreateBenchmark(
     modelPath: String,
     backend: String,
+    visionBackend: String,
+    audioBackend: String,
     prefillTokens: Int,
     decodeTokens: Int,
     cacheDir: String,
     mainNpuNativeLibraryDir: String,
+    visionNpuNativeLibraryDir: String,
+    audioNpuNativeLibraryDir: String,
+    enableSpeculativeDecoding: Boolean?,
+    enableYnnpack: Boolean? = null,
   ): Long
 
   /**
@@ -100,6 +121,7 @@ internal object LiteRtLmJni {
    * @param samplerConfig The sampler configuration.
    * @param loraPath Path to the LoRA weights file.
    * @param audioLoraPath Path to the Audio LoRA weights file.
+   * @param enableSpeculativeDecoding Whether to enable speculative decoding.
    * @return A pointer to the native session instance.
    */
   external fun nativeCreateSession(
@@ -107,6 +129,7 @@ internal object LiteRtLmJni {
     samplerConfig: SamplerConfig?,
     loraPath: String?,
     audioLoraPath: String?,
+    enableSpeculativeDecoding: Boolean?,
   ): Long
 
   /**
@@ -203,6 +226,12 @@ internal object LiteRtLmJni {
    * @param enableConversationConstrainedDecoding Whether to enable conversation constrained
    *   decoding.
    * @param filterChannelContentFromKvCache Whether to filter channel content from the KV cache.
+   * @param prefillPrefaceOnInit Whether to prefill the preface when initializing the conversation.
+   * @param repetitionPenaltyConfig Configuration for repetition penalty.
+   * @param maxOutputToken The maximum number of output tokens. For thinking models, both thinking
+   *   (reasoning) tokens and the final response tokens count towards this limit. When non-positive,
+   *   use the default.
+   * @param thinkingConfig Configuration for thinking/reasoning generation.
    * @return A pointer to the native conversation instance.
    */
   external fun nativeCreateConversation(
@@ -213,10 +242,15 @@ internal object LiteRtLmJni {
     channelsJsonString: String?,
     extraContextJsonString: String,
     enableConversationConstrainedDecoding: Boolean,
-    filterChannelContentFromKvCache: Boolean,
+    filterChannelContentFromKvCache: Boolean?,
     overwritePromptTemplate: String?,
     loraPath: String?,
     audioLoraPath: String?,
+    prefillPrefaceOnInit: Boolean,
+    maxOutputToken: Int,
+    thinkingConfig: ThinkingConfig?,
+    enableResponseFormat: Boolean,
+    enableSpeculativeDecoding: Boolean?,
   ): Long
 
   /**
@@ -238,6 +272,13 @@ internal object LiteRtLmJni {
    * @param callback The callback to receive the streaming responses.
    * @param visualTokenBudget The visual token budget. Only supported by Gemma4 currently. Null for
    *   default.
+   * @param repetitionPenaltyConfig Configuration for repetition penalty.
+   * @param noRepeatNgramConfig Configuration for no repeat ngram.
+   * @param suppressTokens An array of token IDs to suppress.
+   * @param maxOutputToken The maximum number of output tokens. For thinking models, both thinking
+   *   (reasoning) tokens and the final response tokens count towards this limit. When non-positive,
+   *   use the default.
+   * @param thinkingConfig Configuration for thinking/reasoning generation.
    */
   external fun nativeSendMessageAsync(
     conversationPointer: Long,
@@ -245,6 +286,13 @@ internal object LiteRtLmJni {
     extraContextJsonString: String,
     callback: JniMessageCallback,
     visualTokenBudget: Int?,
+    repetitionPenaltyConfig: RepetitionPenaltyConfig?,
+    noRepeatNgramConfig: NoRepeatNgramConfig?,
+    suppressTokens: IntArray?,
+    maxOutputToken: Int,
+    thinkingConfig: ThinkingConfig?,
+    constraintType: Int,
+    constraintString: String?,
   )
 
   /**
@@ -256,6 +304,13 @@ internal object LiteRtLmJni {
    *   format.
    * @param visualTokenBudget The visual token budget. Only supported by Gemma4 currently. Null for
    *   default.
+   * @param repetitionPenaltyConfig Configuration for repetition penalty.
+   * @param noRepeatNgramConfig Configuration for no repeat ngram.
+   * @param suppressTokens An array of token IDs to suppress.
+   * @param maxOutputToken The maximum number of output tokens. For thinking models, both thinking
+   *   (reasoning) tokens and the final response tokens count towards this limit. When non-positive,
+   *   use the default.
+   * @param thinkingConfig Configuration for thinking/reasoning generation.
    * @return The response message in JSON string format.
    */
   external fun nativeSendMessage(
@@ -263,6 +318,13 @@ internal object LiteRtLmJni {
     messageJsonString: String,
     extraContextJsonString: String,
     visualTokenBudget: Int?,
+    repetitionPenaltyConfig: RepetitionPenaltyConfig?,
+    noRepeatNgramConfig: NoRepeatNgramConfig?,
+    suppressTokens: IntArray?,
+    maxOutputToken: Int,
+    thinkingConfig: ThinkingConfig?,
+    constraintType: Int,
+    constraintString: String?,
   ): String
 
   /**
@@ -305,6 +367,14 @@ internal object LiteRtLmJni {
   ): String
 
   /**
+   * Renders the preface into a string for testing purposes.
+   *
+   * @param conversationPointer A pointer to the native conversation instance.
+   * @return The rendered preface string.
+   */
+  external fun nativeConversationRenderPrefaceIntoString(conversationPointer: Long): String
+
+  /**
    * Callback for the nativeSendMessageAsync.
    *
    * <p>Keep the data type simple (string) to avoid constructing complex JVM object in native layer.
@@ -336,12 +406,201 @@ internal object LiteRtLmJni {
    */
   external fun nativeSetMinLogSeverity(logSeverity: Int)
 
-  /** Loads a LiteRT-LM file from the given path for capability queries. */
-  external fun nativeCreateCapabilities(modelPath: String): Long
+  /**
+   * Loads a LiteRT-LM file from the given path for model info queries.
+   *
+   * @param modelPath The path to the model file.
+   * @return A pointer to the native model info wrapper instance.
+   */
+  external fun nativeCreateModelInfo(modelPath: String): Long
 
-  /** Deletes a loaded LiteRT-LM file. */
-  external fun nativeDeleteCapabilities(capabilitiesPointer: Long)
+  /**
+   * Deletes a loaded LiteRT-LM model info instance and frees resources.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   */
+  external fun nativeDeleteModelInfo(modelInfoPointer: Long)
 
-  /** Returns true if the loaded LiteRT-LM file supports speculative decoding. */
-  external fun nativeHasSpeculativeDecodingSupport(capabilitiesPointer: Long): Boolean
+  /**
+   * Returns true if the loaded LiteRT-LM file supports speculative decoding.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return True if speculative decoding is supported, false otherwise.
+   */
+  external fun nativeHasSpeculativeDecodingSupport(modelInfoPointer: Long): Boolean
+
+  /**
+   * Returns true if the model supports thinking / reasoning.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return True if thinking is supported, false otherwise.
+   */
+  external fun nativeSupportsThinking(modelInfoPointer: Long): Boolean
+
+  /**
+   * Returns true if the model supports function calling / tool use.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return True if function calling is supported, false otherwise.
+   */
+  external fun nativeSupportsFunctionCalling(modelInfoPointer: Long): Boolean
+
+  /**
+   * Returns the default sampler type.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return The sampler type integer value.
+   */
+  external fun nativeSamplerType(modelInfoPointer: Long): Int
+
+  /**
+   * Returns the default sampler temperature.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return The sampler temperature.
+   */
+  external fun nativeSamplerTemp(modelInfoPointer: Long): Float
+
+  /**
+   * Returns the default sampler top_k.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return The sampler top_k.
+   */
+  external fun nativeSamplerTopK(modelInfoPointer: Long): Int
+
+  /**
+   * Returns the default sampler top_p.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return The sampler top_p.
+   */
+  external fun nativeSamplerTopP(modelInfoPointer: Long): Float
+
+  /**
+   * Returns true if the model supports the given input modality.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @param modality The modality integer value (0 = Text, 1 = Vision, 2 = Audio, 3 = Video).
+   * @return True if the modality is supported, false otherwise.
+   */
+  external fun nativeSupportsInputModality(modelInfoPointer: Long, modality: Int): Boolean
+
+  /**
+   * Returns the maximum vision token budget for the model.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return The maximum vision token budget, or -1 if not defined.
+   */
+  external fun nativeMaxVisionTokenBudget(modelInfoPointer: Long): Int
+
+  /** Returns the maximum supported context tokens for the loaded LiteRT-LM file. */
+  external fun nativeMaxContextTokens(modelInfoPointer: Long): Int
+
+  /** Returns true if the model has dynamic context. */
+  external fun nativeIsDynamicContext(modelInfoPointer: Long): Boolean
+
+  /**
+   * Returns the list of vision signature selection choices, or null if vision is not supported.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return An IntArray of supported lengths, or null.
+   */
+  external fun nativeVisionSignatureSelection(modelInfoPointer: Long): IntArray?
+
+  /**
+   * Returns the minimum LiteRT-LM runtime version required to run this model.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return The minimum runtime version string, or null if not defined.
+   */
+  external fun nativeMinRuntimeVersion(modelInfoPointer: Long): String?
+
+  /**
+   * Returns the list of supported backends for a given modality ordered by priority.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @param modality The modality integer value (0 = Text, 1 = Vision, 2 = Audio, 3 = Video).
+   * @return An IntArray of supported backends ordered by priority, or null.
+   */
+  external fun nativeModalitySupportedBackends(modelInfoPointer: Long, modality: Int): IntArray?
+
+  /**
+   * Returns the NPU brand of the model for a given modality.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @param modality The modality integer value (0 = Text, 1 = Vision, 2 = Audio, 3 = Video).
+   * @return The NPU brand int value (0 = Unknown, 1 = Qualcomm, 2 = Google Tensor, 3 = MediaTek, 4
+   *   = Intel, 5 = Samsung).
+   */
+  external fun nativeModalityNpuBrand(modelInfoPointer: Long, modality: Int): Int
+
+  /**
+   * Returns the NPU SoC name string for a given modality, or null if not set.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @param modality The modality integer value (0 = Text, 1 = Vision, 2 = Audio, 3 = Video).
+   * @return The SoC name string (e.g. 'SM8750'), or null.
+   */
+  external fun nativeModalitySocName(modelInfoPointer: Long, modality: Int): String?
+
+  /**
+   * Returns the model type integer value (0 = Unknown, 1 = LLM, 2 = Embedding).
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return The model type integer value.
+   */
+  external fun nativeModelType(modelInfoPointer: Long): Int
+
+  /** Returns the output embedding dimension, or -1 if not defined. */
+  external fun nativeEmbeddingDimension(modelInfoPointer: Long): Int
+
+  /**
+   * Returns the list of embedding signature selection choices, or null if not defined.
+   *
+   * @param modelInfoPointer A pointer to the native model info instance.
+   * @return An IntArray of supported lengths, or null.
+   */
+  external fun nativeEmbeddingSignatureSelection(modelInfoPointer: Long): IntArray?
+
+  /** Creates a new LiteRT-LM embedding engine. */
+  external fun nativeCreateEmbeddingEngine(
+    modelFd: Int,
+    modelPath: String,
+    backend: String,
+    visionBackend: String,
+    audioBackend: String,
+    cacheDir: String,
+    mainNpuNativeLibraryDir: String,
+    visionNpuNativeLibraryDir: String,
+    audioNpuNativeLibraryDir: String,
+    mainBackendNumThreads: Int,
+    audioBackendNumThreads: Int,
+    maxInputLength: Int,
+    visionTokensPerImage: Int,
+    activationDataType: Int = -1,
+  ): Long
+
+  /** Deletes the LiteRT-LM embedding engine. */
+  external fun nativeDeleteEmbeddingEngine(embeddingEnginePointer: Long)
+
+  /** Computes embedding for the input data. */
+  external fun nativeComputeEmbedding(
+    embeddingEnginePointer: Long,
+    inputData: Array<InputData>,
+    normalize: Boolean?,
+    insertSpecialTokens: Boolean?,
+    outputSize: Int?,
+    visionTokensPerImage: Int?,
+  ): EmbeddingResponse
+
+  /** Computes embeddings for a batch of input data requests. */
+  external fun nativeComputeEmbeddingBatch(
+    embeddingEnginePointer: Long,
+    inputDataBatch: Array<Array<InputData>>,
+    normalize: Boolean?,
+    insertSpecialTokens: Boolean?,
+    outputSize: Int?,
+    visionTokensPerImage: Int?,
+  ): Array<EmbeddingResponse>
 }

@@ -22,35 +22,81 @@ import textwrap
 
 import click
 
+from litert_lm_cli import config
 
-def parse_speculative_decoding(unused_ctx, unused_param, value):
-  """Click callback to parse speculative decoding mode strings into bool | None.
+
+def parse_config_opt(unused_ctx, unused_param, value):
+  """Click callback for --config option to set the custom config path."""
+  if value is not None:
+    config.set_config_path(value)
+  return value
+
+
+def config_option(f):
+  """Decorator for the --config option."""
+  f = click.option(
+      "--config",
+      type=click.Path(exists=True, dir_okay=False, path_type=str),
+      default=None,
+      callback=parse_config_opt,
+      is_eager=True,
+      expose_value=False,
+      help=(
+          "Path to a custom config.json file to use instead of the default"
+          " ~/.litert-lm/config.json."
+      ),
+  )(f)
+  return f
+
+
+def parse_bool_opt(unused_ctx, unused_param, value):
+  """Click callback to parse boolean option strings into bool | None.
 
   Args:
     unused_ctx: The click context.
     unused_param: The click parameter.
-    value: The value to parse ("auto", "true", or "false").
+    value: The value to parse ("true" or "false").
 
   Returns:
-    True for "true", False for "false", and None for "auto".
+    True for "true", False for "false", and None if not set.
   """
   if value is None:
     return None
-  value_lower = value.lower()
-  if value_lower == "auto":
-    return None
-  elif value_lower == "true":
+  if isinstance(value, bool):
+    return value
+  value_lower = str(value).lower()
+  if value_lower == "true":
     return True
   elif value_lower == "false":
     return False
   return value
 
 
-def cache_dir_value_from_cache_mode(cache: str) -> str:
+def parse_deprecated_speculative_decoding(unused_ctx, unused_param, value):
+  """Click callback for deprecated --enable-speculative-decoding option."""
+  if value is not None and (
+      unused_ctx is None or not unused_ctx.resilient_parsing
+  ):
+    click.echo(
+        click.style(
+            "Warning: '--enable-speculative-decoding' is deprecated and will"
+            " be removed in the future. Please use '--speculative-decoding'"
+            " instead.",
+            fg="yellow",
+        ),
+        err=True,
+    )
+  return parse_bool_opt(unused_ctx, unused_param, value)
+
+
+parse_speculative_decoding = parse_bool_opt
+
+
+def cache_dir_value_from_cache_mode(cache: str | None) -> str:
   """Returns the cache directory value for the given cache mode.
 
   Args:
-    cache: The cache mode. Valid values are "disk", "memory", "no".
+    cache: The cache mode. Valid values are "disk", "memory", "no", or None.
 
   Returns:
     The cache directory value as a string.
@@ -58,6 +104,8 @@ def cache_dir_value_from_cache_mode(cache: str) -> str:
   Raises:
     ValueError: If the cache mode is invalid.
   """
+  if cache is None:
+    return ""
   if cache == "disk":
     return ""
   elif cache == "memory":
@@ -90,6 +138,7 @@ def huggingface_options(f):
 
 def common_inference_options(f):
   """Decorator for common options shared across commands."""
+  f = config_option(f)
   f = huggingface_options(f)
   f = click.option(
       "--verbose",
@@ -100,10 +149,11 @@ def common_inference_options(f):
   f = click.option(
       "--cache",
       type=click.Choice(["disk", "memory", "no"]),
-      default="disk",
+      default=None,
       help=textwrap.dedent("""\
           \b
-          Caching mode for compiled model artifacts to speed up startup.
+          Caching mode for compiled model artifacts to speed up startup. If not
+          set, use the model's configured value.
             - disk: Persists compiled artifacts to a file next to the model.
             - memory: Caches compiled artifacts in RAM (CPU backend only, not available on Windows).
             - no: Disables caching (recompiles on every run).
@@ -111,22 +161,94 @@ def common_inference_options(f):
   )(f)
   f = click.option(
       "--enable-speculative-decoding",
-      type=click.Choice(["auto", "true", "false"], case_sensitive=False),
-      default="auto",
-      callback=parse_speculative_decoding,
+      type=click.Choice(["true", "false"], case_sensitive=False),
+      default=None,
+      deprecated=True,
+      hidden=True,
+      callback=parse_deprecated_speculative_decoding,
       help=textwrap.dedent("""\
           \b
-          Speculative decoding mode ("auto", "true", "false").
-            - auto: Automatically determine the speculative decoding behavior from the model metadata.
+          Speculative decoding mode ("true", "false"). If not set, use the model's configured value.
             - true: Force enable speculative decoding. It will throw an error if the model does not support it.
             - false: Force disable speculative decoding.
           """),
   )(f)
   f = click.option(
+      "--speculative-decoding",
+      is_flag=False,
+      flag_value="true",
+      type=click.Choice(["true", "false"], case_sensitive=False),
+      default=None,
+      callback=parse_speculative_decoding,
+      help=textwrap.dedent("""\
+          \b
+          Speculative decoding mode ("true", "false"). If not set, use the model's configured value.
+            - true: Force enable speculative decoding. It will throw an error if the model does not support it.
+            - false: Force disable speculative decoding.
+          """),
+  )(f)
+
+  f = click.option(
       "--backend",
       type=click.Choice(["cpu", "gpu", "npu"], case_sensitive=False),
-      default="cpu",
-      help="The backend to use.",
+      default=None,
+      help="The backend to use. If not set, use the model's configured value.",
+  )(f)
+  f = click.option(
+      "--cpu-thread-count",
+      type=click.IntRange(min=1),
+      default=None,
+      help=(
+          "The number of threads to use for the CPU backend. Only takes effect"
+          " when the main 'backend' is 'cpu'."
+      ),
+  )(f)
+  f = click.option(
+      "--gpu-decode-steps-per-sync",
+      type=click.IntRange(min=1),
+      default=None,
+      help=(
+          "The number of decode steps per sync for GPU backend. Only applied"
+          " to supported GPU models. Otherwise, ignored."
+      ),
+  )(f)
+  f = click.option(
+      "--activation-data-type",
+      type=click.Choice(
+          ["fp32", "fp16", "int16", "int8"], case_sensitive=False
+      ),
+      default=None,
+      hidden=True,
+      help=(
+          "The activation data type to use for inference. If not set, use the"
+          " default from the engine. Note: This option is experimental and may"
+          " not always work.  Currently, it can be used to force FP32 mode when"
+          " using a GPU backend."
+      ),
+  )(f)
+  f = click.option(
+      "--ringbuffers-local-attention",
+      is_flag=False,
+      flag_value="true",
+      type=click.Choice(["true", "false"], case_sensitive=False),
+      default=None,
+      callback=parse_bool_opt,
+      help=(
+          "Whether to use ringbuffers for local attention KV cache to minimize"
+          " memory usage on supported models. When disabled, memory is"
+          " allocated for the full context length, enabling instant rewinding"
+          " at higher memory cost."
+      ),
+  )(f)
+  f = click.option(
+      "--enable-ynnpack",
+      is_flag=False,
+      flag_value="true",
+      type=click.Choice(["true", "false"], case_sensitive=False),
+      default=None,
+      callback=parse_bool_opt,
+      hidden=True,
+      help="Delegate supported CPU operations to YNNPACK before XNNPACK.",
   )(f)
   return f
 

@@ -14,6 +14,7 @@
 
 #include "runtime/components/prompt_template.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -77,31 +78,38 @@ std::string EditTemplateForMinijinja(absl::string_view template_content) {
 
 using json = nlohmann::ordered_json;
 
-PromptTemplate::PromptTemplate(absl::string_view template_content,
-                               bool edit_template_for_minijinja)
-    : minijinja_template_(new_minijinja_template(
-          edit_template_for_minijinja
-              ? EditTemplateForMinijinja(template_content)
-              : std::string(template_content))) {
-  const auto caps = minijinja_template_->get_capabilities();
+struct PromptTemplate::MinijinjaTemplateImpl {
+  rust::Box<MinijinjaTemplate> tmpl;
+};
+
+PromptTemplate::PromptTemplate(absl::string_view template_content)
+    : minijinja_template_(std::make_unique<MinijinjaTemplateImpl>(
+          MinijinjaTemplateImpl{new_minijinja_template(
+              EditTemplateForMinijinja(template_content))})) {
+  const auto caps = minijinja_template_->tmpl->get_capabilities();
   capabilities_ = PromptTemplateCapabilities{
-      .supports_tools = caps.supports_tools,
-      .supports_tool_calls = caps.supports_tool_calls,
-      .supports_system_role = caps.supports_system_role,
-      .supports_parallel_tool_calls = caps.supports_parallel_tool_calls,
-      .supports_tool_call_id = caps.supports_tool_call_id,
-      .requires_typed_content = caps.requires_typed_content,
       .supports_single_turn = caps.supports_single_turn};
 }
 
+PromptTemplate::~PromptTemplate() = default;
+
 PromptTemplate::PromptTemplate(const PromptTemplate& other)
-    : minijinja_template_(other.minijinja_template_->clone_template()) {
-  capabilities_ = other.capabilities_;
-}
+    : minijinja_template_(
+          other.minijinja_template_
+              ? std::make_unique<MinijinjaTemplateImpl>(MinijinjaTemplateImpl{
+                    other.minijinja_template_->tmpl->clone_template()})
+              : nullptr),
+      capabilities_(other.capabilities_) {}
 
 PromptTemplate& PromptTemplate::operator=(const PromptTemplate& other) {
-  minijinja_template_ = other.minijinja_template_->clone_template();
-  capabilities_ = other.capabilities_;
+  if (this != &other) {
+    minijinja_template_ =
+        other.minijinja_template_
+            ? std::make_unique<MinijinjaTemplateImpl>(MinijinjaTemplateImpl{
+                  other.minijinja_template_->tmpl->clone_template()})
+            : nullptr;
+    capabilities_ = other.capabilities_;
+  }
   return *this;
 }
 
@@ -111,13 +119,18 @@ PromptTemplate::PromptTemplate(PromptTemplate&& other)
 }
 
 PromptTemplate& PromptTemplate::operator=(PromptTemplate&& other) {
-  minijinja_template_ = std::move(other.minijinja_template_);
-  capabilities_ = other.capabilities_;
+  if (this != &other) {
+    minijinja_template_ = std::move(other.minijinja_template_);
+    capabilities_ = other.capabilities_;
+  }
   return *this;
 }
 
 absl::StatusOr<std::string> PromptTemplate::Apply(
     const PromptTemplateInput& input) const {
+  if (minijinja_template_ == nullptr) {
+    return absl::FailedPreconditionError("PromptTemplate was moved from.");
+  }
   nlohmann::ordered_json minijinja_inputs;
   minijinja_inputs["messages"] = input.messages;
   minijinja_inputs["tools"] = input.tools;
@@ -126,7 +139,7 @@ absl::StatusOr<std::string> PromptTemplate::Apply(
   minijinja_inputs["now"] = absl::ToUnixSeconds(input.now);
   minijinja_inputs["bos_token"] = input.bos_token;
   minijinja_inputs["eos_token"] = input.eos_token;
-  auto result = minijinja_template_->apply(minijinja_inputs.dump());
+  auto result = minijinja_template_->tmpl->apply(minijinja_inputs.dump());
   if (!result.is_ok) {
     return absl::InternalError(
         absl::StrCat("Failed to apply template: ", std::string(result.error)));
@@ -135,7 +148,10 @@ absl::StatusOr<std::string> PromptTemplate::Apply(
 }
 
 absl::string_view PromptTemplate::GetTemplateSource() const {
-  auto source = minijinja_template_->source();
+  if (minijinja_template_ == nullptr) {
+    return "";
+  }
+  auto source = minijinja_template_->tmpl->source();
   return absl::string_view(source.data(), source.size());
 }
 

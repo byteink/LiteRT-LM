@@ -3,7 +3,7 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_static_framework")
 package(default_visibility = ["//visibility:public"])
 
 # We deliberately depend on `//c:engine` (not `//c:engine_cpu`) so the
-# resulting framework links the full `engine_impl` — which references the
+# resulting framework links the full `engine_impl` - which references the
 # GPU accelerator/sampler placeholders. The actual Metal kernels live in
 # `libLiteRtMetalAccelerator.dylib` (shipped as a separate XCFramework
 # from `prebuilt/ios_*arm64/`); LiteRT's auto_registration.cc dlopens it
@@ -15,7 +15,10 @@ package(default_visibility = ["//visibility:public"])
 ios_static_framework(
     name = "LiteRtLm",
     hdrs = [
+        "//c:api_export.h",
+        "//c:conversation.h",
         "//c:engine.h",
+        "//c:error_reporter.h",
     ],
     bundle_name = "LiteRtLm",
     minimum_os_version = "17.0",

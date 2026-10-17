@@ -39,41 +39,321 @@ class LiteRtLmTestBase(parameterized.TestCase):
         / "litert_lm/runtime/testdata/test_lm.litertlm"
     )
 
-  def _create_engine(self, max_num_tokens=10):
+  def _create_engine(self, max_num_tokens=10, enable_benchmark=False):
     return litert_lm.Engine(
         self.model_path,
         litert_lm.Backend.CPU(),
         max_num_tokens=max_num_tokens,
         cache_dir=":nocache",
+        enable_benchmark=enable_benchmark,
     )
 
-  @staticmethod
-  def _extract_text(stream):
-    text_pieces = []
-    for chunk in stream:
-      content_list = chunk.get("content", [])
-      for item in content_list:
-        if item.get("type") == "text":
-          text_pieces.append(item.get("text", ""))
-    return text_pieces
+  @classmethod
+  def _extract_text(cls, stream):
+    return [str(chunk) for chunk in stream if str(chunk)]
 
 
 class EngineTest(LiteRtLmTestBase):
 
-  _EXPECTED_RESPONSE = "TarefaByte دارایेत्र investigaciónప్రదేశ"
+  _EXPECTED_RESPONSE = (
+      " spectrophot spectrophot<unused178><unused178><unused178><unused178>"
+  )
 
   def test_engine_init_fail(self):
     with self.assertRaisesRegex(
-        RuntimeError, "Failed to create LiteRT-LM engine for /non/existent/path"
+        RuntimeError,
+        r"litert_lm_engine_create failed with status \w+ \(\d+\): .+",
     ):
       litert_lm.Engine("/non/existent/path")
+
+  def test_create_checked_raises_with_last_error_message(self):
+    lib = litert_lm._ffi._get_lib()
+    with self.assertRaisesRegex(
+        RuntimeError,
+        r"litert_lm_engine_create_session failed with status"
+        r" INVALID_ARGUMENT \(3\): .+",
+    ):
+      litert_lm._ffi.create_checked(
+          lib, "litert_lm_engine_create_session", None, None
+      )
+
+  def test_call_checked_raises_with_last_error_message(self):
+    lib = litert_lm._ffi._get_lib()
+    with self.assertRaisesRegex(
+        RuntimeError,
+        r"litert_lm_engine_settings_set_num_threads failed with status"
+        r" INVALID_ARGUMENT \(3\): .+",
+    ):
+      litert_lm._ffi.call_checked(
+          lib, "litert_lm_engine_settings_set_num_threads", None, 4
+      )
+
+  def test_set_min_log_severity_invalid_raises(self):
+    with self.assertRaisesRegex(
+        RuntimeError,
+        r"litert_lm_set_min_log_level failed with status INVALID_ARGUMENT"
+        r" \(3\): Unknown LiteRtLmLogSeverity",
+    ):
+      # 6 is within the value range of LiteRtLmLogSeverity but is not a named
+      # enumerator. Values outside the range are undefined behavior in C++.
+      litert_lm._ffi.set_min_log_severity(6)  # pyrefly: ignore[bad-argument-type]
+
+  def test_check_status_unknown_code(self):
+    lib = litert_lm._ffi._get_lib()
+    litert_lm._ffi.check_status(lib, "some_function", 0)
+    with self.assertRaisesRegex(
+        RuntimeError,
+        r"some_function failed with status UNKNOWN_STATUS_CODE \(1234\)",
+    ):
+      litert_lm._ffi.check_status(lib, "some_function", 1234)
+
+  def test_engine_init_setter_failure_raises_and_frees_settings(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_delete = lib.litert_lm_engine_settings_delete
+    self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_set_max_num_tokens",
+            autospec=True,
+            return_value=litert_lm._ffi.StatusCode.INTERNAL,
+        )
+    )
+    mock_delete = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_delete",
+            autospec=True,
+            side_effect=orig_delete,
+        )
+    )
+
+    with self.assertRaisesRegex(
+        RuntimeError,
+        r"litert_lm_engine_settings_set_max_num_tokens failed with status"
+        r" INTERNAL \(13\)",
+    ):
+      self._create_engine(max_num_tokens=10)
+    mock_delete.assert_called_once()
+
+  def test_create_conversation_setter_failure_raises(self):
+    engine = self._create_engine()
+    lib = litert_lm._ffi._get_lib()
+    self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_conversation_config_set_system_message",
+            autospec=True,
+            return_value=litert_lm._ffi.StatusCode.INVALID_ARGUMENT,
+        )
+    )
+    with self.assertRaisesRegex(
+        RuntimeError,
+        r"litert_lm_conversation_config_set_system_message failed with status"
+        r" INVALID_ARGUMENT \(3\)",
+    ):
+      engine.create_conversation(system_message="hi")
+
+  def test_backend_cpu_equality(self):
+    cpu_default = litert_lm.Backend.CPU()
+    cpu_default_explicit = litert_lm.Backend.CPU(thread_count=None)
+    cpu_4 = litert_lm.Backend.CPU(thread_count=4)
+    cpu_2 = litert_lm.Backend.CPU(thread_count=2)
+    gpu = litert_lm.Backend.GPU()
+
+    with self.subTest("CPU default equality"):
+      self.assertEqual(cpu_default, cpu_default_explicit)
+    with self.subTest("CPU default vs thread count inequality"):
+      self.assertNotEqual(cpu_default, cpu_4)
+    with self.subTest("Different CPU thread counts inequality"):
+      self.assertNotEqual(cpu_4, cpu_2)
+    with self.subTest("CPU vs GPU inequality"):
+      self.assertNotEqual(cpu_4, gpu)
+
+  def test_engine_init_with_cpu_thread_counts(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_set_num_threads = lib.litert_lm_engine_settings_set_num_threads
+    orig_set_audio_num_threads = (
+        lib.litert_lm_engine_settings_set_audio_num_threads
+    )
+
+    mock_set_num_threads = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_set_num_threads",
+            autospec=True,
+            side_effect=orig_set_num_threads,
+        )
+    )
+    mock_set_audio_num_threads = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_set_audio_num_threads",
+            autospec=True,
+            side_effect=orig_set_audio_num_threads,
+        )
+    )
+
+    litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(thread_count=4),
+        audio_backend=litert_lm.Backend.CPU(thread_count=2),
+        cache_dir=":nocache",
+    )
+
+    mock_set_num_threads.assert_called_once_with(mock.ANY, 4)
+    mock_set_audio_num_threads.assert_called_once_with(mock.ANY, 2)
+
+  def test_engine_init_with_use_ringbuffers_local_attention(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_fn = lib.litert_lm_engine_settings_set_use_ringbuffers_local_attention
+
+    mock_set_ringbuffers = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_set_use_ringbuffers_local_attention",
+            autospec=True,
+            side_effect=orig_fn,
+        )
+    )
+
+    litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        use_ringbuffers_local_attention=True,
+        cache_dir=":nocache",
+    )
+
+    mock_set_ringbuffers.assert_called_once_with(mock.ANY, True)
+
+  def test_engine_init_with_enable_ynnpack(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_fn = lib.litert_lm_engine_settings_set_enable_ynnpack
+
+    mock_set_enable_ynnpack = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_set_enable_ynnpack",
+            autospec=True,
+            side_effect=orig_fn,
+        )
+    )
+
+    # Default should not call set_enable_ynnpack.
+    litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        cache_dir=":nocache",
+    )
+    mock_set_enable_ynnpack.assert_not_called()
+
+    # enable_ynnpack=True (succeeds if YNNPACK is compiled into the build,
+    # or raises RuntimeError when YNNPACK is excluded at build time).
+    try:
+      litert_lm.Engine(
+          self.model_path,
+          backend=litert_lm.Backend.CPU(),
+          enable_ynnpack=True,
+          cache_dir=":nocache",
+      )
+    except RuntimeError:
+      pass
+    mock_set_enable_ynnpack.assert_called_once_with(mock.ANY, True)
+    mock_set_enable_ynnpack.reset_mock()
+
+    # enable_ynnpack=False
+    litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        enable_ynnpack=False,
+        cache_dir=":nocache",
+    )
+    mock_set_enable_ynnpack.assert_called_once_with(mock.ANY, False)
+
+  def test_engine_init_with_max_vision_tokens_per_image(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_fn = lib.litert_lm_engine_settings_set_max_vision_tokens_per_image
+
+    mock_set_max_vision_tokens = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_settings_set_max_vision_tokens_per_image",
+            autospec=True,
+            side_effect=orig_fn,
+        )
+    )
+
+    # Default should not call set_max_vision_tokens_per_image.
+    with litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        cache_dir=":nocache",
+    ) as engine:
+      self.assertIsNone(engine.max_vision_tokens_per_image)
+    mock_set_max_vision_tokens.assert_not_called()
+
+    with litert_lm.Engine(
+        self.model_path,
+        backend=litert_lm.Backend.CPU(),
+        max_vision_tokens_per_image=70,
+        cache_dir=":nocache",
+    ) as engine:
+      self.assertEqual(engine.max_vision_tokens_per_image, 70)
+    mock_set_max_vision_tokens.assert_called_once_with(mock.ANY, 70)
+
+  def test_create_conversation_with_visual_token_budget(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_fn = lib.litert_lm_conversation_optional_args_set_visual_token_budget
+
+    mock_set_visual_token_budget = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_conversation_optional_args_set_visual_token_budget",
+            autospec=True,
+            side_effect=orig_fn,
+        )
+    )
+
+    with self.subTest("unset_budget_is_not_sent"):
+      with (
+          self._create_engine() as engine,
+          engine.create_conversation() as conversation,
+      ):
+        conversation.send_message("Hello world!")
+      mock_set_visual_token_budget.assert_not_called()
+
+    # Bind before entering: `with ... as engine` is typed as AbstractEngine,
+    # whose create_conversation() does not accept visual_token_budget.
+    engine = litert_lm.Engine(
+        self.model_path,
+        litert_lm.Backend.CPU(),
+        max_num_tokens=10,
+        max_vision_tokens_per_image=280,
+        cache_dir=":nocache",
+    )
+    with engine:
+      with self.subTest("engine_max_is_not_used_as_default"):
+        mock_set_visual_token_budget.reset_mock()
+        with engine.create_conversation() as conversation:
+          conversation.send_message("Hello world!")
+        mock_set_visual_token_budget.assert_not_called()
+
+      with self.subTest("send_message"):
+        mock_set_visual_token_budget.reset_mock()
+        with engine.create_conversation(visual_token_budget=70) as conversation:
+          conversation.send_message("Hello world!")
+        mock_set_visual_token_budget.assert_called_once_with(mock.ANY, 70)
+
+      with self.subTest("send_message_async"):
+        mock_set_visual_token_budget.reset_mock()
+        with engine.create_conversation(visual_token_budget=70) as conversation:
+          self._extract_text(conversation.send_message_async("Hello world!"))
+        mock_set_visual_token_budget.assert_called_once_with(mock.ANY, 70)
 
   @mock.patch("sys.platform", "win32")
   def test_engine_init_with_npu_backend(self):
     lib = litert_lm._ffi._get_lib()
     if hasattr(lib, "litert_lm_engine_settings_set_litert_dispatch_lib_dir"):
       orig_set_dir = lib.litert_lm_engine_settings_set_litert_dispatch_lib_dir
-      mock_set_dir = mock.MagicMock(side_effect=orig_set_dir)
 
       mock_ov = mock.MagicMock()
       mock_ov.__file__ = "path/to/openvino/__init__.py"
@@ -82,29 +362,31 @@ class EngineTest(LiteRtLmTestBase):
       with mock.patch.object(
           lib,
           "litert_lm_engine_settings_set_litert_dispatch_lib_dir",
-          mock_set_dir,
-      ):
+          autospec=True,
+          side_effect=orig_set_dir,
+      ) as mock_set_dir:
         with mock.patch.dict("sys.modules", {"openvino": mock_ov}):
-          with mock.patch("importlib.resources.files") as mock_files:
+          with mock.patch("importlib.resources.files") as unused_mock_files:
             try:
-              npu = litert_lm.Backend.NPU()
-              npu.litert_dispatch_lib_dir = "my_custom_dir"
+              npu = litert_lm.Backend.NPU(
+                  litert_dispatch_lib_dir="my_custom_dir"
+              )
               litert_lm.Engine(
                   self.model_path,
                   npu,
                   cache_dir=":nocache",
               )
-            except Exception:  # pylint: disable=broad-exception-caught
+            except RuntimeError:
               pass
 
-            mock_set_dir.assert_called_once()
-            args, _ = mock_set_dir.call_args
-            self.assertEqual(args[1], "my_custom_dir")
+            mock_set_dir.assert_called_once_with(mock.ANY, "my_custom_dir")
 
   @mock.patch("sys.platform", "linux")
   def test_npu_backend_non_windows(self):
     with self.assertRaisesRegex(
-        RuntimeError, "NPU is supported only for Intel OpenVINO on Windows"
+        RuntimeError,
+        "NPU is supported only for Intel OpenVINO on Windows. Current"
+        " platform is 'linux'.",
     ):
       litert_lm.Backend.NPU()
 
@@ -112,7 +394,10 @@ class EngineTest(LiteRtLmTestBase):
   def test_npu_backend_windows_no_openvino(self):
     with mock.patch.dict("sys.modules", {"openvino": None}):
       with self.assertRaisesRegex(
-          RuntimeError, "NPU is supported only for Intel OpenVINO on Windows"
+          RuntimeError,
+          "NPU is supported only for Intel OpenVINO on Windows. Failed to"
+          " import the 'openvino' package. Please ensure 'openvino' is"
+          " installed.",
       ):
         litert_lm.Backend.NPU()
 
@@ -122,7 +407,10 @@ class EngineTest(LiteRtLmTestBase):
     mock_ov.Core.return_value.available_devices = ["CPU", "GPU"]
     with mock.patch.dict("sys.modules", {"openvino": mock_ov}):
       with self.assertRaisesRegex(
-          RuntimeError, "NPU is supported only for Intel OpenVINO on Windows"
+          RuntimeError,
+          "NPU is supported only for Intel OpenVINO on Windows. No NPU"
+          r" device detected by OpenVINO \(available devices: \['CPU',"
+          r" 'GPU'\]\).",
       ):
         litert_lm.Backend.NPU()
 
@@ -220,6 +508,8 @@ class EngineTest(LiteRtLmTestBase):
       self.assertIsNotNone(engine)
       self.assertIsNotNone(conversation)
       message = conversation.send_message("Hello world!")
+      self.assertIsInstance(message, litert_lm.Message)
+      self.assertEqual(str(message), self._EXPECTED_RESPONSE)
 
       expected_message = {
           "role": "assistant",
@@ -260,10 +550,8 @@ class EngineTest(LiteRtLmTestBase):
 
       text_pieces = []
       for chunk in stream:
-        content_list = chunk.get("content", [])
-        for item in content_list:
-          if item.get("type") == "text":
-            text_pieces.append(item.get("text", ""))
+        if str(chunk):
+          text_pieces.append(str(chunk))
 
         # Cancel the process after receiving the first chunk.
         conversation.cancel_process()
@@ -275,22 +563,115 @@ class EngineTest(LiteRtLmTestBase):
       # signal is processed by the background thread.
 
   def test_benchmark_class(self):
-    benchmark = litert_lm.Benchmark(
+    with litert_lm.Benchmark(
         self.model_path,
         litert_lm.Backend.CPU(),
         prefill_tokens=10,
         decode_tokens=10,
         cache_dir=":nocache",
+    ) as benchmark:
+      self.assertIsInstance(benchmark, litert_lm.AbstractBenchmark)
+      result = benchmark.run()
+      self.assertIsInstance(result, litert_lm.BenchmarkInfo)
+      self.assertGreater(result.init_time_in_second, 0)
+      self.assertGreater(result.time_to_first_token_in_second, 0)
+      self.assertGreater(result.last_prefill_token_count, 0)
+      self.assertGreater(result.last_prefill_tokens_per_second, 0)
+      self.assertGreater(result.last_decode_token_count, 0)
+      self.assertGreater(result.last_decode_tokens_per_second, 0)
+
+  def test_benchmark_reuses_engine_across_runs(self):
+    lib = litert_lm._ffi._get_lib()
+    with (
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_create",
+            wraps=lib.litert_lm_engine_create,
+        ) as mock_engine_create,
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_delete",
+            wraps=lib.litert_lm_engine_delete,
+        ) as mock_engine_delete,
+        mock.patch.object(
+            lib,
+            "litert_lm_engine_create_session",
+            wraps=lib.litert_lm_engine_create_session,
+        ) as mock_create_session,
+        mock.patch.object(
+            lib,
+            "litert_lm_session_delete",
+            wraps=lib.litert_lm_session_delete,
+        ) as mock_session_delete,
+    ):
+      with litert_lm.Benchmark(
+          self.model_path,
+          litert_lm.Backend.CPU(),
+          prefill_tokens=10,
+          decode_tokens=10,
+          cache_dir=":nocache",
+      ) as benchmark:
+        warmup_result = benchmark.run()
+        iter_result = benchmark.run()
+        self.assertIsInstance(warmup_result, litert_lm.BenchmarkInfo)
+        self.assertIsInstance(iter_result, litert_lm.BenchmarkInfo)
+        mock_engine_create.assert_called_once()
+        mock_engine_delete.assert_not_called()
+        self.assertEqual(mock_create_session.call_count, 2)
+        self.assertEqual(mock_session_delete.call_count, 2)
+
+      mock_engine_delete.assert_called_once()
+      benchmark.close()
+      mock_engine_delete.assert_called_once()
+
+      # Calling run() outside a context manager deterministically deletes the
+      # engine on completion.
+      benchmark.run()
+      self.assertEqual(mock_engine_create.call_count, 2)
+      self.assertEqual(mock_engine_delete.call_count, 2)
+
+  def test_benchmark_class_with_thread_count(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_set_num_threads = lib.litert_lm_engine_settings_set_num_threads
+    with mock.patch.object(
+        lib,
+        "litert_lm_engine_settings_set_num_threads",
+        autospec=True,
+        side_effect=orig_set_num_threads,
+    ) as mock_set_num_threads:
+      benchmark = litert_lm.Benchmark(
+          self.model_path,
+          litert_lm.Backend.CPU(thread_count=4),
+          prefill_tokens=10,
+          decode_tokens=10,
+          cache_dir=":nocache",
+      )
+      benchmark.run()
+
+      mock_set_num_threads.assert_called_once_with(mock.ANY, 4)
+
+  def test_benchmark_class_with_enable_speculative_decoding(self):
+    lib = litert_lm._ffi._get_lib()
+    orig_set_spec = (
+        lib.litert_lm_engine_settings_set_enable_speculative_decoding
     )
-    self.assertIsInstance(benchmark, litert_lm.AbstractBenchmark)
-    result = benchmark.run()
-    self.assertIsInstance(result, litert_lm.BenchmarkInfo)
-    self.assertGreater(result.init_time_in_second, 0)
-    self.assertGreater(result.time_to_first_token_in_second, 0)
-    self.assertGreater(result.last_prefill_token_count, 0)
-    self.assertGreater(result.last_prefill_tokens_per_second, 0)
-    self.assertGreater(result.last_decode_token_count, 0)
-    self.assertGreater(result.last_decode_tokens_per_second, 0)
+    with mock.patch.object(
+        lib,
+        "litert_lm_engine_settings_set_enable_speculative_decoding",
+        autospec=True,
+        side_effect=orig_set_spec,
+    ) as mock_set_spec:
+      benchmark = litert_lm.Benchmark(
+          self.model_path,
+          litert_lm.Backend.CPU(),
+          prefill_tokens=10,
+          decode_tokens=10,
+          cache_dir=":nocache",
+          enable_speculative_decoding=False,
+      )
+      benchmark.run()
+
+      mock_set_spec.assert_called_once_with(mock.ANY, False)
 
   def test_engine_abc_inheritance(self):
     with self._create_engine() as engine:
@@ -346,6 +727,66 @@ class EngineTest(LiteRtLmTestBase):
     ):
       self.assertEqual(conversation.messages, messages)
 
+  def test_create_conversation_with_max_output_tokens(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(max_output_tokens=1) as conversation,
+    ):
+      self.assertEqual(conversation.max_output_tokens, 1)
+      message = conversation.send_message("Hello world!")
+      self.assertEqual(message["role"], "assistant")
+      # Response should be shorter because of max_output_tokens=1 default in
+      # conversation
+      text = "".join([c.get("text", "") for c in message.get("content", [])])
+      self.assertLess(len(text), 15)
+
+  def test_create_conversation_with_chat_template(self):
+    tmpl = "{{ bos_token }}{% for m in messages %}{{ m.content }}{% endfor %}"
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(chat_template=tmpl) as conversation,
+    ):
+      self.assertEqual(conversation.chat_template, tmpl)
+
+  def test_create_conversation_with_filter_channel_content_from_kv_cache(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(
+            filter_channel_content_from_kv_cache=True
+        ) as conversation,
+    ):
+      self.assertIsNotNone(conversation)
+
+  def test_create_conversation_with_enable_speculative_decoding(self):
+    with self._create_engine() as engine:
+      with engine.create_conversation(
+          enable_speculative_decoding=True
+      ) as conversation:
+        self.assertIsNotNone(conversation)
+
+      with engine.create_conversation(
+          enable_speculative_decoding=False
+      ) as conversation:
+        self.assertIsNotNone(conversation)
+
+  def test_create_session_with_enable_speculative_decoding(self):
+    with self._create_engine() as engine:
+      with engine.create_session(enable_speculative_decoding=True) as session:
+        self.assertIsNotNone(session)
+
+      with engine.create_session(enable_speculative_decoding=False) as session:
+        self.assertIsNotNone(session)
+
+  def test_create_conversation_with_max_output_tokens_async(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(max_output_tokens=1) as conversation,
+    ):
+      stream = conversation.send_message_async("Hello world!")
+      text_pieces = self._extract_text(stream)
+      self.assertLen(text_pieces, 1)
+      self.assertLess(len("".join(text_pieces)), 15)
+
   def test_conversation_send_message_object(self):
     with (
         self._create_engine() as engine,
@@ -353,7 +794,7 @@ class EngineTest(LiteRtLmTestBase):
     ):
       user_message = litert_lm.Message.user("Hello world!")
       message = conversation.send_message(user_message)
-      self.assertEqual(message["role"], "assistant")
+      self.assertEqual(message.role, litert_lm.Role.MODEL)
 
   def test_conversation_send_contents_object(self):
     with (
@@ -362,7 +803,7 @@ class EngineTest(LiteRtLmTestBase):
     ):
       user_contents = litert_lm.Contents.of("Hello world!")
       message = conversation.send_message(user_contents)
-      self.assertEqual(message["role"], "assistant")
+      self.assertEqual(message.role, litert_lm.Role.MODEL)
 
   def test_conversation_send_dict_message(self):
     with (
@@ -371,7 +812,38 @@ class EngineTest(LiteRtLmTestBase):
     ):
       user_message = {"role": "user", "content": "Hello world!"}
       message = conversation.send_message(user_message)
+      self.assertEqual(message.role, litert_lm.Role.MODEL)
+
+  def test_conversation_with_thinking_config(self):
+    thinking_config = litert_lm.ThinkingConfig(
+        enable_thinking=True, thinking_token_budget=10
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(
+            thinking_config=thinking_config
+        ) as conversation,
+    ):
+      user_message = {"role": "user", "content": "Hello world!"}
+      message = conversation.send_message(
+          user_message, thinking_config=thinking_config
+      )
       self.assertEqual(message["role"], "assistant")
+      self.assertEqual(conversation.thinking_config, thinking_config)
+
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation(
+            thinking_config=thinking_config
+        ) as conversation,
+    ):
+      user_message = {"role": "user", "content": "Hello world!"}
+      responses = list(
+          conversation.send_message_async(
+              user_message, thinking_config=thinking_config
+          )
+      )
+      self.assertNotEmpty(responses)
 
   def test_conversation_token_count(self):
     with (
@@ -382,6 +854,76 @@ class EngineTest(LiteRtLmTestBase):
       user_message = {"role": "user", "content": "Hello world!"}
       conversation.send_message(user_message)
       self.assertEqual(conversation.token_count, 10)
+
+  def test_conversation_get_benchmark_info(self):
+    with (
+        self._create_engine(enable_benchmark=True) as engine,
+        engine.create_conversation() as conversation,
+    ):
+      user_message = {"role": "user", "content": "Hello world!"}
+      conversation.send_message(user_message)
+      info = conversation.get_benchmark_info()
+      self.assertIsInstance(info, litert_lm.BenchmarkInfo)
+      self.assertGreaterEqual(info.init_time_in_second, 0.0)
+      self.assertGreater(info.last_prefill_token_count, 0)
+      self.assertGreater(info.last_decode_token_count, 0)
+
+  def test_conversation_get_benchmark_info_without_benchmark_raises(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      with self.assertRaisesRegex(
+          RuntimeError,
+          r"litert_lm_conversation_get_benchmark_info failed with status",
+      ):
+        conversation.get_benchmark_info()
+
+  def test_create_conversation_failure_raises_and_frees_config(self):
+    engine = self._create_engine()
+    lib = litert_lm._ffi._get_lib()
+    orig_config_delete = lib.litert_lm_conversation_config_delete
+    self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_conversation_create",
+            autospec=True,
+            return_value=litert_lm._ffi.StatusCode.INTERNAL,
+        )
+    )
+    mock_config_delete = self.enter_context(
+        mock.patch.object(
+            lib,
+            "litert_lm_conversation_config_delete",
+            autospec=True,
+            side_effect=orig_config_delete,
+        )
+    )
+    with self.assertRaisesRegex(
+        RuntimeError,
+        r"litert_lm_conversation_create failed with status INTERNAL \(13\)",
+    ):
+      engine.create_conversation()
+    mock_config_delete.assert_called_once()
+
+  def test_conversation_token_count_failure_raises(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      lib = litert_lm._ffi._get_lib()
+      with mock.patch.object(
+          lib,
+          "litert_lm_conversation_get_token_count",
+          autospec=True,
+          return_value=litert_lm._ffi.StatusCode.INTERNAL,
+      ):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"litert_lm_conversation_get_token_count failed with status"
+            r" INTERNAL \(13\)",
+        ):
+          _ = conversation.token_count
 
   def test_create_conversation_with_extra_context(self):
     extra_context = {"key": "value"}
@@ -466,6 +1008,24 @@ class EngineTest(LiteRtLmTestBase):
       for score in scoring_responses.token_scores[0]:
         self.assertIsInstance(score, float)
 
+  def test_session_api_scoring_matches_prefill(self):
+    with self._create_engine(max_num_tokens=16) as engine:
+      # Case A: Prefill "Hello", score " world again"
+      with engine.create_session() as s1:
+        s1.run_prefill(["Hello"])
+        res1 = s1.run_text_scoring([" world again"], store_token_lengths=True)
+        token_scores1 = res1.token_scores[0]
+        score_again_case_a = token_scores1[-1]
+
+      # Case B: Prefill "Hello world", score " again"
+      with engine.create_session() as s2:
+        s2.run_prefill(["Hello world"])
+        res2 = s2.run_text_scoring([" again"], store_token_lengths=True)
+        token_scores2 = res2.token_scores[0]
+        score_again_case_b = token_scores2[-1]
+
+      self.assertAlmostEqual(score_again_case_a, score_again_case_b, places=3)
+
   def test_session_api_run_decode_async(self):
     with (
         self._create_engine() as engine,
@@ -499,6 +1059,124 @@ class EngineTest(LiteRtLmTestBase):
       # (like Mac arm64) the generation might complete before the cancellation
       # signal is processed by the background thread.
 
+  def test_conversation_send_message_with_repetition_penalty_config(self):
+    repetition_penalty_config = litert_lm.RepetitionPenaltyConfig(
+        repetition_penalty=1.2,
+        presence_penalty=0.1,
+        frequency_penalty=0.2,
+        window_size=10,
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      message = conversation.send_message(
+          "Hello world!",
+          repetition_penalty_config=repetition_penalty_config,
+      )
+      self.assertEqual(message.role, litert_lm.Role.MODEL)
+
+  def test_conversation_send_message_async_with_repetition_penalty_config(self):
+    repetition_penalty_config = litert_lm.RepetitionPenaltyConfig(
+        repetition_penalty=1.2,
+        presence_penalty=0.1,
+        frequency_penalty=0.2,
+        window_size=10,
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      stream = conversation.send_message_async(
+          "Hello world!",
+          repetition_penalty_config=repetition_penalty_config,
+      )
+      text_pieces = self._extract_text(stream)
+      self.assertNotEmpty(text_pieces)
+
+  def test_conversation_send_message_with_no_repeat_ngram_config(self):
+    no_repeat_ngram_config = litert_lm.NoRepeatNgramConfig(
+        no_repeat_ngram_size=3,
+        window_size=10,
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      message = conversation.send_message(
+          "Hello world!",
+          no_repeat_ngram_config=no_repeat_ngram_config,
+      )
+      self.assertEqual(message.role, litert_lm.Role.MODEL)
+
+  def test_conversation_send_message_async_with_no_repeat_ngram_config(self):
+    no_repeat_ngram_config = litert_lm.NoRepeatNgramConfig(
+        no_repeat_ngram_size=3,
+        window_size=10,
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      stream = conversation.send_message_async(
+          "Hello world!",
+          no_repeat_ngram_config=no_repeat_ngram_config,
+      )
+      text_pieces = self._extract_text(stream)
+      self.assertNotEmpty(text_pieces)
+
+  def test_conversation_send_message_with_suppress_tokens_config(self):
+    suppress_tokens_config = litert_lm.SuppressTokensConfig(
+        suppress_tokens=[1, 2, 3],
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      message = conversation.send_message(
+          "Hello world!",
+          suppress_tokens_config=suppress_tokens_config,
+      )
+      self.assertEqual(message.role, litert_lm.Role.MODEL)
+
+  def test_conversation_send_message_async_with_suppress_tokens_config(self):
+    suppress_tokens_config = litert_lm.SuppressTokensConfig(
+        suppress_tokens=[1, 2, 3],
+    )
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      stream = conversation.send_message_async(
+          "Hello world!",
+          suppress_tokens_config=suppress_tokens_config,
+      )
+      text_pieces = self._extract_text(stream)
+      self.assertNotEmpty(text_pieces)
+
+  def test_conversation_send_message_with_max_output_tokens(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      message = conversation.send_message("Hello world!", max_output_tokens=1)
+      self.assertEqual(message.role, litert_lm.Role.MODEL)
+      # Response should be shorter because of max_output_tokens=1
+      text = str(message)
+      self.assertLess(len(text), 15)
+
+  def test_conversation_send_message_async_with_max_output_tokens(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      stream = conversation.send_message_async(
+          "Hello world!", max_output_tokens=1
+      )
+      text_pieces = self._extract_text(stream)
+      self.assertLen(text_pieces, 1)
+      self.assertLess(len("".join(text_pieces)), 15)
+
   @parameterized.parameters(True, False)
   def test_session_api_apply_prompt_template(self, apply_prompt_template):
     with self._create_engine() as engine:
@@ -506,6 +1184,81 @@ class EngineTest(LiteRtLmTestBase):
           apply_prompt_template=apply_prompt_template
       ) as session:
         self.assertIsNotNone(session)
+
+  def test_response_format_validation(self):
+    with self.assertRaisesRegex(ValueError, "Invalid JSON schema string"):
+      litert_lm.ResponseFormat.json("{invalid_json: true")
+
+  def test_response_format_without_enabling(self):
+    with (
+        self._create_engine() as engine,
+        engine.create_conversation() as conversation,
+    ):
+      with self.assertRaisesRegex(
+          ValueError,
+          "response_format cannot be used unless constrained_decoding_config",
+      ):
+        conversation.send_message(
+            "What is the capital of France?",
+            response_format=litert_lm.ResponseFormat.regex("[0-9]{3}"),
+        )
+
+      with self.assertRaisesRegex(
+          ValueError,
+          "response_format cannot be used unless constrained_decoding_config",
+      ):
+        # We must iterate the generator to trigger the exception
+        next(
+            conversation.send_message_async(
+                "What is the capital of France?",
+                response_format=litert_lm.ResponseFormat.regex("[0-9]{3}"),
+            )
+        )
+
+  def test_create_conversation_enable_constrained_decoding(self):
+    lib = litert_lm._ffi._get_lib()
+    with (
+        mock.patch.object(
+            lib,
+            "litert_lm_conversation_config_set_enable_constrained_decoding",
+            wraps=lib.litert_lm_conversation_config_set_enable_constrained_decoding,
+        ) as mock_set_enable_constrained,
+        mock.patch.object(
+            lib,
+            "litert_lm_conversation_config_set_constraint_provider",
+            wraps=lib.litert_lm_conversation_config_set_constraint_provider,
+        ) as mock_set_constraint_provider,
+    ):
+      with (
+          self._create_engine() as engine,
+          engine.create_conversation(
+              constrained_decoding_config=litert_lm.ConstrainedDecodingConfig(
+                  enable=True
+              )
+          ) as conv,
+      ):
+        self.assertIsNotNone(conv)
+        mock_set_enable_constrained.assert_called_once()
+        args, _ = mock_set_enable_constrained.call_args
+        self.assertTrue(args[1])
+
+      mock_set_enable_constrained.reset_mock()
+      mock_set_constraint_provider.reset_mock()
+
+      with (
+          self._create_engine() as engine,
+          engine.create_conversation(
+              constrained_decoding_config=litert_lm.ConstrainedDecodingConfig(
+                  enable=True,
+                  provider=litert_lm.LiteRtLmConstraintProviderType.LL_GUIDANCE,
+              )
+          ) as conv,
+      ):
+        self.assertIsNotNone(conv)
+        mock_set_constraint_provider.assert_called_once()
+        mock_set_enable_constrained.assert_called_once()
+        args, _ = mock_set_enable_constrained.call_args
+        self.assertTrue(args[1])
 
 
 class FunctionCallingTest(LiteRtLmTestBase):

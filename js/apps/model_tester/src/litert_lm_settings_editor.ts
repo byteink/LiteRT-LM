@@ -101,7 +101,7 @@ export class LitertLmSettingsEditor extends LitElement {
   } satisfies CpuConfig;
 
   private gpuConfig: GpuConfig = {
-    max_top_k: 1,
+    max_top_k: 64,
     external_tensor_mode: false,
   } satisfies GpuConfig;
 
@@ -111,10 +111,11 @@ export class LitertLmSettingsEditor extends LitElement {
     num_decode_steps_per_sync: 1,
     sequence_batch_size: 0,
     supported_lora_ranks: [],
-    max_top_k: 1,
+    max_top_k: 64,
     enable_decode_logits: false,
     enable_external_embeddings: false,
     use_submodel: false,
+    use_autosized_ringbuffers: false,
   };
 
   @state()
@@ -125,7 +126,7 @@ export class LitertLmSettingsEditor extends LitElement {
       samplerBackend: Backend.GPU_ARTISAN,
       backendConfig: this.cpuConfig,
       advancedSettings: {
-        prefill_batch_sizes: new Set(),
+        prefill_batch_sizes: [],
         num_output_candidates: 1,
         configure_magic_numbers: true,
         verify_magic_numbers: false,
@@ -141,6 +142,7 @@ export class LitertLmSettingsEditor extends LitElement {
         share_constant_tensors: true,
       },
     },
+    benchmarkEnabled: false,
   };
 
   @state()
@@ -492,6 +494,13 @@ export class LitertLmSettingsEditor extends LitElement {
               this.gpuArtisanConfig.use_submodel = val;
               this.requestUpdate();
             }, 'Whether the submodel should be used if available.')}
+      ${
+        this.renderField(
+            'Use Autosized Ringbuffers', config, loaded, 'use_autosized_ringbuffers',
+            'checkbox', (val) => {
+              this.gpuArtisanConfig.use_autosized_ringbuffers = val;
+              this.requestUpdate();
+            }, 'For low GPU memory with long contexts, use minimally sized ringbuffers for local attention. Prevents instantaneous rewinding, but saves a lot of memory, especially for large models.')}
     `;
   }
 
@@ -508,7 +517,7 @@ export class LitertLmSettingsEditor extends LitElement {
               const sizes = val.split(',')
                                 .map(s => Number(s.trim()))
                                 .filter(n => !isNaN(n));
-              this.updateAdvanced({prefill_batch_sizes: new Set(sizes)});
+              this.updateAdvanced({prefill_batch_sizes: sizes});
             },
             'Ordered set of the maximum number of prefill tokens processed at once when the graph has dynamic prefill lengths.')}
       ${

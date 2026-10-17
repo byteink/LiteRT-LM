@@ -29,12 +29,12 @@ namespace litert::lm {
 // batch item. Stop sequences can be added dynamically. Example usage:
 //
 //   StopTokenDetector detector(batch_size);
-//   RETURN_IF_ERROR(detector.AddStopTokenSequence({1}));
-//   RETURN_IF_ERROR(detector.AddStopTokenSequence({4,5,3,2}));
+//   ABSL_RETURN_IF_ERROR(detector.AddStopTokenSequence({1}));
+//   ABSL_RETURN_IF_ERROR(detector.AddStopTokenSequence({4,5,3,2}));
 //   // ... add more stop sequences as needed ...
 //   // ... process tokens ...
-//   RETURN_IF_ERROR(detector.ProcessTokens(token_stream_1));
-//   RETURN_IF_ERROR(detector.ProcessTokens(token_stream_2));
+//   ABSL_RETURN_IF_ERROR(detector.ProcessTokens(token_stream_1));
+//   ABSL_RETURN_IF_ERROR(detector.ProcessTokens(token_stream_2));
 //   // ... process more tokens ...
 //   // Check if stop token was found...
 //   ASIGN_OR_RETURN(bool done, detector.AllDone());
@@ -53,6 +53,16 @@ class StopTokenDetector {
   //   - stop_sequence: The token ID sequence to add. Must not be empty.
   //   - InvalidArgumentError if sequence is empty or added before.
   absl::Status AddStopTokenSequence(const std::vector<int>& stop_sequence);
+
+  // Marks the single token stop sequence {stop_token_id} for rollback: when
+  // decoding with one output candidate stops on it, Tasks::Decode rolls the
+  // executor back by one step so the token is not written to the KV cache.
+  // Use this for a stop token that the prompt template writes again at the
+  // start of the next turn, such as Gemma 4's `<|tool_response>`.
+  //   - stop_token_id: The token ID of a stop sequence added with
+  //     AddStopTokenSequence().
+  // Returns false if {stop_token_id} is not a stop sequence.
+  bool MarkForRollback(int stop_token_id);
 
   // Resets detector state for a new batch size or clears existing state. Note
   // that this does not clear the stop sequences themselves.
@@ -95,9 +105,17 @@ class StopTokenDetector {
   // the stop token is already found.
   int MaxPartialStopTokenLength(int index) const;
 
+  // Returns whether the given batch index stopped on a stop token marked with
+  // MarkForRollback() and has not processed any token since.
+  bool EndsWithRollbackToken(int index) const;
+
  private:
   // Stores all added stop sequences.
   std::vector<std::vector<int>> stop_sequences_storage_;
+
+  // rollback_marks_[k]: true if stop_sequences_storage_[k] is marked with
+  // MarkForRollback().
+  std::vector<bool> rollback_marks_;
 
   // batch_item_match_progress_[i][k]: current match length for batch item 'i'
   // against stop_sequences_storage_[k].
@@ -115,6 +133,10 @@ class StopTokenDetector {
   // (if batch_size > 1) the additional length until the other batch items
   // also match the stop sequence.
   std::vector<int> matched_stop_sequence_length_;
+
+  // ends_with_rollback_token_[i]: true if the latest token of batch item 'i'
+  // completed a stop sequence marked with MarkForRollback().
+  std::vector<bool> ends_with_rollback_token_;
 };
 
 }  // namespace litert::lm

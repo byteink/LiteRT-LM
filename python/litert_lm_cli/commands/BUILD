@@ -23,25 +23,6 @@ load(
 package(default_visibility = ["//visibility:public"])
 
 pytype_strict_library(
-    name = "serve",
-    srcs = [
-        "gemini_handler.py",
-        "openai_handler.py",
-        "serve.py",
-        "serve_util.py",
-    ],
-    imports = [".."],
-    deps = [
-        "//python/litert_lm",
-        "//python/litert_lm_builder:litertlm_peek",
-        "//python/litert_lm_cli:help_formatter",
-        "//python/litert_lm_cli:model",
-        requirement("click"),
-        requirement("typing_extensions"),
-    ],
-)
-
-pytype_strict_library(
     name = "convert",
     srcs = ["convert.py"],
     imports = [".."],
@@ -69,6 +50,22 @@ pytype_strict_library(
     srcs = ["import.py"],
     imports = [".."],
     deps = [
+        "//python/litert_lm_cli:cli_helpers",
+        "//python/litert_lm_cli:common",
+        "//python/litert_lm_cli:help_formatter",
+        "//python/litert_lm_cli:huggingface_download",
+        "//python/litert_lm_cli:model",
+        requirement("click"),
+    ],
+)
+
+pytype_strict_library(
+    name = "describe",
+    srcs = ["describe.py"],
+    imports = [".."],
+    deps = [
+        "//python/litert_lm",
+        "//python/litert_lm_cli:cli_helpers",
         "//python/litert_lm_cli:common",
         "//python/litert_lm_cli:help_formatter",
         "//python/litert_lm_cli:huggingface_download",
@@ -100,11 +97,35 @@ pytype_strict_library(
 )
 
 pytype_strict_library(
+    name = "pack",
+    srcs = ["pack.py"],
+    imports = [".."],
+    deps = [
+        "//python/litert_lm_builder:litertlm_builder",
+        "//python/litert_lm_cli:help_formatter",
+        requirement("click"),
+    ],
+)
+
+pytype_strict_library(
+    name = "unpack",
+    srcs = ["unpack.py"],
+    imports = [".."],
+    deps = [
+        "//python/litert_lm_builder:litertlm_builder",
+        "//python/litert_lm_cli:help_formatter",
+        "//python/litert_lm_cli:model",
+        requirement("click"),
+    ],
+)
+
+pytype_strict_library(
     name = "benchmark",
     srcs = ["benchmark.py"],
     imports = [".."],
     deps = [
         "//python/litert_lm",
+        "//python/litert_lm_cli:cli_helpers",
         "//python/litert_lm_cli:common",
         "//python/litert_lm_cli:help_formatter",
         "//python/litert_lm_cli:huggingface_download",
@@ -120,8 +141,9 @@ pytype_strict_library(
     srcs = ["run.py"],
     imports = [".."],
     deps = [
-        ":convert",
         "//python/litert_lm",
+        "//python/litert_lm_builder:litertlm_builder",
+        "//python/litert_lm_cli:cli_helpers",
         "//python/litert_lm_cli:common",
         "//python/litert_lm_cli:help_formatter",
         "//python/litert_lm_cli:huggingface_download",
@@ -134,17 +156,34 @@ pytype_strict_library(
 )
 
 py_test(
-    name = "serve_openai_streaming_test",
-    srcs = ["serve_openai_streaming_test.py"],
-    data = ["//runtime/e2e_tests/data:gemma3-1b-it-int4-litertlm"],
+    name = "import_test",
+    srcs = ["import_test.py"],
     tags = [
-        "manual",
         "nomacos",
         "nowindows",
     ],
     deps = [
-        ":serve",
+        ":import",  # fixdeps: keep
+        "//python/litert_lm_cli:cli_helpers",
+        "//python/litert_lm_cli:huggingface_download",
         "//python/litert_lm_cli:model",
         "@absl_py//absl/testing:absltest",
+        requirement("click"),
+    ],
+)
+
+py_test(
+    name = "describe_test",
+    srcs = ["describe_test.py"],
+    tags = [
+        "nomacos",
+        "nowindows",
+    ],
+    deps = [
+        ":describe",
+        "//python/litert_lm",
+        "//python/litert_lm_cli:model",
+        "@absl_py//absl/testing:absltest",
+        requirement("click"),
     ],
 )

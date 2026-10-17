@@ -30,4 +30,14 @@ filegroup(
 exports_files([
     "have_a_wonderful_day.wav",
     "colored_rect_163_586_615_957.jpg",
+    "test_lm.litertlm",
+    "test_embedding.litertlm",
+    "test_image_70.png",
+    "test_image_140.png",
+    "test_audio_5s.wav",
+    "test_audio_10s.wav",
+    "embeddinggemma_v2_golden_text.json",
+    "embeddinggemma_v2_golden_image.json",
+    "embeddinggemma_v2_golden_audio.json",
+    "embeddinggemma_v2_golden_multimodal.json",
 ])
